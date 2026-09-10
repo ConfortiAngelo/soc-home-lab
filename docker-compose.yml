@@ -1,0 +1,23 @@
+version: "3.8"
+
+services:
+  splunk:
+    image: splunk/splunk:latest
+    container_name: splunk-siem
+    hostname: splunk-siem
+    environment:
+      - SPLUNK_START_ARGS=--accept-license
+      - SPLUNK_PASSWORD={SPLUNK_PASSWORD}
+      - SPLUNK_ENABLE_LISTEN=9997
+      - SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com
+    ports:
+      - "8000:8000"   # Splunk Web 
+      - "9997:9997"   # Recepción de datos de Forwarders
+    volumes:
+      - splunk-etc:/opt/splunk/etc
+      - splunk-var:/opt/splunk/var
+    restart: unless-stopped
+
+volumes:
+  splunk-etc:
+  splunk-var:
