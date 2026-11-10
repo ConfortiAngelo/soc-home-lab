@@ -1,18 +1,18 @@
-version: "3.8"
-
 services:
   splunk:
-    image: splunk/splunk:latest
+    # Pinned to a minor line instead of :latest so the lab is reproducible.
+    image: splunk/splunk:10.2
     container_name: splunk-siem
     hostname: splunk-siem
     environment:
       - SPLUNK_START_ARGS=--accept-license
-      - SPLUNK_PASSWORD={SPLUNK_PASSWORD}
+      # Read from .env (see .env.example). Compose fails fast if it is missing.
+      - SPLUNK_PASSWORD=${SPLUNK_PASSWORD:?Set SPLUNK_PASSWORD in .env}
       - SPLUNK_ENABLE_LISTEN=9997
       - SPLUNK_GENERAL_TERMS=--accept-sgt-current-at-splunk-com
     ports:
-      - "8000:8000"   # Splunk Web 
-      - "9997:9997"   # Recepción de datos de Forwarders
+      - "127.0.0.1:8000:8000"   # Splunk Web: localhost only
+      - "9997:9997"             # Forwarder receiving port: must be reachable from the host-only network
     volumes:
       - splunk-etc:/opt/splunk/etc
       - splunk-var:/opt/splunk/var
