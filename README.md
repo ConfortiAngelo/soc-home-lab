@@ -1,165 +1,126 @@
-# SOC Home Lab: Splunk + Sysmon sobre Windows y Linux
+# SOC Home Lab: Splunk + Sysmon on Windows and Linux
 
-## Resumen
+A working SIEM pipeline built end to end: two endpoints (Ubuntu Server and Windows 10) ship real telemetry to a Dockerized Splunk indexer through the Splunk Universal Forwarder. It is the log foundation for my next portfolio projects (attack simulation, detections, DFIR).
 
-Infraestructura de monitoreo base para un SOC home lab: dos endpoints (Ubuntu Server y Windows 10) enviando telemetría real a un indexador Splunk corriendo en Docker, vía Splunk Universal Forwarder. Sirve como base de datos/logs para los proyectos siguientes del portafolio (simulación de ataques, DFIR, automatización).
+## Demo
 
-## Objetivo
+| Windows (Sysmon) | Linux (syslog + auth.log) |
+|---|---|
+| ![Sysmon events in Splunk](screenshots/index_windows.png) | ![Linux events in Splunk](screenshots/index_linux.png) |
 
-Splunk es una de las herramientas de mayor demanda en el mercado SOC y hasta este proyecto no tenía backing práctico en mi CV. El objetivo fue levantar un SIEM funcional de punta a punta: administración de Splunk, log forwarding, y Sysmon como fuente de telemetría enriquecida.
+Architecture diagram: [`diagrams/architecture.png`](diagrams/architecture.png)
 
-## Arquitectura
+## Architecture
 
 ```
 ┌──────────────────────────┐         ┌────────────────────────────┐
 │   Ubuntu Server VM       │         │      Windows 10 VM         │
-│                          │         │                            │
-│  /var/log/syslog         │         │  Sysmon (config Olaf       │
-│  /var/log/auth.log       │         │  Hartong)                  │
-│                          │         │  Microsoft-Windows-        │
-│  Splunk Universal        │         │  Sysmon/Operational        │
-│  Forwarder               │         │                            │
-│                          │         │  Splunk Universal          │
-│                          │         │  Forwarder                 │
+│  /var/log/syslog         │         │  Sysmon (sysmon-modular    │
+│  /var/log/auth.log       │         │  config by Olaf Hartong)   │
+│  Splunk Universal Fwd    │         │  Splunk Universal Fwd      │
 └───────────┬──────────────┘         └─────────────┬──────────────┘
-            │  tcp/9997                            │  tcp/9997
-            │  (host-only network)                 │  (renderXml=true)
+            │  tcp/9997 (host-only network)        │  tcp/9997 (renderXml=true)
             └────────────────┬─────────────────────┘
                              ▼
                  ┌───────────────────────────┐
-                 │   Host: Splunk Free       │
-                 │   (contenedor Docker)     │
-                 │   192.168.56.1            │
-                 │                           │
-                 │   índice: linux_logs      │
-                 │   índice: windows_sysmon  │
+                 │  Host: Splunk (Docker)    │
+                 │  192.168.56.1             │
+                 │  index: linux_logs        │
+                 │  index: windows_sysmon    │
                  └───────────────────────────┘
 ```
 
-Red host-only de VirtualBox (`192.168.56.1`) conecta ambas VMs al host, donde corre el indexador.
+VirtualBox host-only network (`192.168.56.0/24`) connects both VMs to the host running the indexer.
 
-## Stack tecnológico
+## Results
 
-- **Host:** Splunk Free (Docker)
-- **VM Linux:** Ubuntu Server + Splunk Universal Forwarder
-- **VM Windows:** Windows 10 + Sysmon (config de Olaf Hartong) + Splunk Universal Forwarder
-- **Red:** VirtualBox host-only adapter
-- **Virtualización:** VirtualBox
+Verifiable in the screenshots above (24-hour window, 9–10 Sep 2026):
 
-## Prerrequisitos
+| Index | Source | Events |
+|---|---|---|
+| `windows_sysmon` | `XmlWinEventLog:Microsoft-Windows-Sysmon/Operational` | 3,171 |
+| `linux_logs` | `/var/log/syslog`, `/var/log/auth.log` | 1,129 |
 
-- VirtualBox instalado
-- Docker instalado en el host
-- Splunk Universal Forwarder (descarga desde splunk.com, requiere cuenta gratuita)
-- [Sysmon](https://learn.microsoft.com/sysinternals/downloads/sysmon) + [configuración de Olaf Hartong](https://github.com/olafhartong/sysmon-modular)
+Sysmon events arrive already tagged with ATT&CK technique IDs by the sysmon-modular config (e.g. `technique_id=T1574.010` in the Windows screenshot).
 
-## Instalación y configuración
+## How to run
 
-### 1. Indexador Splunk (host, Docker)
+Indexer (host):
 
 ```bash
-docker run -d -p 8000:8000 -p 9997:9997 \
-  -e SPLUNK_START_ARGS=--accept-license \
-  -e SPLUNK_PASSWORD=<tu_password> \
-  --name splunk splunk/splunk:latest
+cp .env.example .env        # then set a strong SPLUNK_PASSWORD
+docker compose up -d
+# open http://127.0.0.1:8000  (user: admin)
 ```
 
-Habilitar recepción en el puerto 9997 (**no está activo por defecto**):
-`Settings → Forwarding and receiving → Configure receiving → Add new → puerto 9997`
+Forwarders: install the Splunk Universal Forwarder on each VM and copy the matching files from [`configs/`](configs/) into `$SPLUNK_HOME/etc/system/local/`:
 
-### 2. VM Ubuntu Server — Universal Forwarder
+| VM | Files |
+|---|---|
+| Ubuntu Server | [`configs/ubuntu_forwarder/`](configs/ubuntu_forwarder/) |
+| Windows 10 | [`configs/windows_forwarder/`](configs/windows_forwarder/) — install Sysmon first: `sysmon64.exe -accepteula -i sysmonconfig.xml` |
 
-Instalar el forwarder y configurar:
+> In the forwarder installer, leave **Deployment Server** (8089, management plane) empty. The field that matters is **Receiving Indexer** (9997, data plane).
 
-`inputs.conf`:
-```ini
-[monitor:///var/log/syslog]
-disabled = false
-index = linux_logs
-
-[monitor:///var/log/auth.log]
-disabled = false
-index = linux_logs
-```
-
-`outputs.conf` (crítico — sin este archivo el forwarder instala pero no envía nada):
-```ini
-[tcpout]
-defaultGroup = default-autolb-group
-
-[tcpout:default-autolb-group]
-server = 192.168.56.1:9997
-```
-
-> En el asistente de instalación, el campo **Deployment Server** (puerto 8089) debe quedar vacío — es el plano de gestión. El campo correcto para apuntar al indexador es **Receiving Indexer** (puerto 9997).
-
-### 3. VM Windows 10 — Sysmon + Universal Forwarder
-
-Instalar Sysmon con la config de Olaf Hartong:
-```powershell
-sysmon64.exe -accepteula -i sysmonconfig.xml
-```
-
-`inputs.conf` del forwarder:
-```ini
-[WinEventLog://Microsoft-Windows-Sysmon/Operational]
-disabled = false
-index = windows_sysmon
-renderXml = true
-```
-
-`outputs.conf`: mismo contenido que en la VM Linux, apuntando a `192.168.56.1:9997`.
-
-## Verificación
-
-Secuencia recomendada:
+### Verification
 
 ```spl
-# 1. Confirmar que el indexador está activo
-index=_internal
-
-# 2. Confirmar conexión del forwarder
-index=_internal sourcetype=splunkd component=TcpInputProc
-
-# 3. Buscar eventos Linux
-index=linux_logs
-
-# 4. Buscar eventos Windows Sysmon
-index=windows_sysmon
+index=_internal                                           ``` indexer is up ```
+index=_internal sourcetype=splunkd component=TcpInputProc ``` forwarder connected ```
+index=linux_logs                                          ``` Linux events ```
+index=windows_sysmon                                      ``` Sysmon events ```
 ```
 
-Chequeo de red antes de esperar datos en Splunk:
+Network check before waiting for data:
+
 ```bash
-# Desde la VM Ubuntu
-nc -zv 192.168.56.1 9997
+nc -zv 192.168.56.1 9997                                   # from the Ubuntu VM
 ```
 ```powershell
-# Desde la VM Windows
-Test-NetConnection -ComputerName 192.168.56.1 -Port 9997
+Test-NetConnection -ComputerName 192.168.56.1 -Port 9997   # from the Windows VM
 ```
 
-## Errores comunes / troubleshooting
+## Troubleshooting
 
-| Síntoma | Causa | Solución |
+| Symptom | Cause | Fix |
 |---|---|---|
-| Forwarder instala pero no llegan datos | Falta `outputs.conf` | Es una falla silenciosa  crear el archivo manualmente |
-| No hay datos en Splunk aunque el forwarder está corriendo | Puerto 9997 no habilitado en el indexador | Habilitar recepción en Settings → Forwarding and receiving |
-| Ruta de logs no encontrada | `/var/logs/` en vez de `/var/log/` | Verificar la ruta exacta, es case/typo-sensitive |
-| Stanza `disable = true` no funciona | El campo correcto es `disabled`, no `disable` | Corregir el nombre del campo |
-| `outputs.conf` no envía datos | `defaultGroup` mal escrito (`default-Group`) o stanza `tcp-server://` en vez de `tcpout-server://` | Revisar casing exacto de cada campo/stanza |
+| Forwarder installs but no data arrives | Missing `outputs.conf` | Silent failure: create the file manually |
+| Forwarder running, still no data | Port 9997 receiving not enabled | `SPLUNK_ENABLE_LISTEN=9997` in compose, or *Settings → Forwarding and receiving* |
+| Log path not found | `/var/logs/` instead of `/var/log/` | Check the exact path |
+| `disable = true` ignored | The key is `disabled` | Fix the key name |
+| `outputs.conf` sends nothing | `default-Group` instead of `defaultGroup`, or `tcp-server://` instead of `tcpout-server://` | Check exact casing of keys and stanzas |
 
-## Capturas
-- Se demuestran las capturas en `/screenshots`
+## Security fixes
 
+| Issue (first version) | Risk | Fix |
+|---|---|---|
+| `SPLUNK_PASSWORD={SPLUNK_PASSWORD}`: missing `$`, so the admin password was the literal string `{SPLUNK_PASSWORD}` | Predictable admin password on a web UI exposed on all interfaces | `${SPLUNK_PASSWORD:?…}` read from a git-ignored `.env`; compose refuses to start without it |
+| Splunk Web published on `0.0.0.0:8000` | Admin UI reachable from the LAN | Bound to `127.0.0.1:8000` |
+| `splunk/splunk:latest` | Non-reproducible lab, surprise upgrades | Pinned to `10.2` |
+| Windows forwarder config files were empty | Repo did not match the documented setup | Filled with the config used in the lab |
 
-## Lo que aprendí
+## Design decisions and limitations
 
-- El asistente del Universal Forwarder tiene dos campos que se confunden fácilmente: **Deployment Server** (8089, plano de gestión) y **Receiving Indexer** (9997, plano de datos). Solo el segundo importa en un lab de un solo nodo.
-- La recepción en el puerto 9997 **no viene activada por defecto** en Splunk — hay que habilitarla manualmente.
-- La ausencia de `outputs.conf` es un fallo silencioso: todo parece instalado correctamente pero no se envía ningún dato.
-- Los typos en archivos `.conf` son difíciles de detectar porque Splunk no siempre lanza un error claro — el casing exacto de cada campo (`defaultGroup`) y stanza (`tcpout-server://`) es crítico.
-- Conviene verificar en este orden: indexador corriendo → conectividad de red → fuente de datos activa (Sysmon) → `index=_internal` para confirmar la conexión del forwarder.
+- **Docker for the indexer, VMs for endpoints:** the indexer is disposable and versioned in compose; endpoints need a real OS to produce real telemetry.
+- **Separate indexes per OS** keep searches fast and retention configurable per source.
+- **`renderXml = true`** for Sysmon so every field is extracted reliably.
+- Limitations: single-node indexer, no TLS between forwarders and indexer, no saved searches or alerts yet. This lab covers ingestion only.
 
-## Mejoras futuras
+## What I learned
 
-- Sumar Wazuh en paralelo para comparar un SIEM comercial (tier gratis) contra uno 100% open-source.
+- The forwarder installer has two easy-to-confuse fields: **Deployment Server** (8089) and **Receiving Indexer** (9997). Only the second matters in a single-node lab.
+- Receiving on 9997 is **not enabled by default** in Splunk.
+- A missing `outputs.conf` is a silent failure: everything looks installed but nothing is sent.
+- Typos in `.conf` files rarely raise clear errors; exact casing (`defaultGroup`, `tcpout-server://`) matters.
+- Debug in order: indexer up → network → data source (Sysmon) → `index=_internal` to confirm the forwarder.
+
+## With more time
+
+- Simulate attacks (Atomic Red Team) and write SPL detections with screenshots of true positives.
+- Turn those detections into Sigma rules (planned in `detections-as-code`).
+- Add TLS between forwarders and indexer.
+- Run Wazuh side by side to compare Splunk with a fully open-source SIEM.
+
+## License
+
+[MIT](LICENSE)
